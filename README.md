@@ -1,4 +1,4 @@
 # SimplePGPGTK
-A simple pgp key manager written in rust. 
+A simple PGP key manager written in Rust. 
 
 This requires GPG to be installed.
