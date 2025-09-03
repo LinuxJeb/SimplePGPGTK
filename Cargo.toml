@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 gtk4 = "0.7"
 gdk4 = "0.7"
+rexpect = "0.3"
 
 [build-dependencies]
 glib-build-tools = "0.18"
+

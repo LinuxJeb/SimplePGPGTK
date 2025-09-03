@@ -1,6 +1,10 @@
 use gtk4::prelude::*;
-use gtk4::{glib, Application, ApplicationWindow, Box, Button, Dialog, Entry, Label, ScrolledWindow, TextView, MessageDialog};
+use gtk4::{glib, Application, ApplicationWindow, Box, Button, Dialog, Entry, Label, ScrolledWindow, TextView, MessageDialog, SearchEntry};
 use std::process::Command;
+use std::io::Write;
+use std::rc::Rc;
+use std::cell::RefCell;
+
 
 const APP_ID: &str = "com.linuxjeb.pgpmgr";
 
@@ -232,6 +236,34 @@ fn show_import_key_dialog(parent: &ApplicationWindow) {
     dialog.present();
 }
 
+
+
+fn delete_pgp_key(key_id: &str) -> Result<(), String> {
+    // Build an expect script as a one-liner
+    let script = format!(
+        r#"spawn gpg --yes --delete-secret-and-public-key {}
+expect "Delete this key from the keyring?" {{ send "y\r" }}
+expect "This is a secret key! - really delete?" {{ send "y\r" }}
+expect eof"#,
+        key_id
+    );
+
+    let output = Command::new("expect")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .map_err(|e| format!("Failed to run expect: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+
+
+
 fn show_keys_dialog(parent: &ApplicationWindow) {
     let dialog = Dialog::builder()
         .title("My PGP Keys")
@@ -265,6 +297,7 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
                 let label = Label::new(Some(&format!("{} <{}> [{}]", key.name, key.email, key.key_id)));
                 label.set_halign(gtk4::Align::Start);
 
+                // View button
                 let view_btn = Button::with_label("View Public Key");
                 let parent_clone = parent.clone();
                 let key_id = key.key_id.clone();
@@ -274,6 +307,48 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
 
                 row_box.append(&label);
                 row_box.append(&view_btn);
+
+                // Delete button
+                let delete_btn = Button::with_label("Delete");
+                let parent_clone = parent.clone();
+                let key_id_clone = key.key_id.clone();
+                let dialog_clone = dialog.clone();
+                delete_btn.connect_clicked(move |_| {
+                    let confirm = MessageDialog::builder()
+                        .transient_for(&parent_clone)
+                        .modal(true)
+                        .buttons(gtk4::ButtonsType::YesNo)
+                        .text(&format!("Are you sure you want to delete key [{}]?", key_id_clone))
+                        .message_type(gtk4::MessageType::Warning)
+                        .build();
+
+                    let parent_for_confirm = parent_clone.clone();
+                    let key_id_confirm = key_id_clone.clone();
+                    let dialog_for_confirm = dialog_clone.clone();
+                    confirm.connect_response(move |confirm_dialog, response| {
+                        if response == gtk4::ResponseType::Yes {
+                            match delete_pgp_key(&key_id_confirm) {
+                                Ok(_) => {
+                                    match delete_pgp_key(&key_id_confirm){
+                                        Ok(()) => {}
+                                        Err(e) => show_error_dialog(&parent_for_confirm, &format!("Failed to delete key: {}", e)),
+                                    }
+                                    // Close the current dialog
+                                    dialog_for_confirm.close();
+                                    // Reopen a fresh keys dialog
+                                    show_keys_dialog(&parent_for_confirm);
+                                    show_info_dialog(&parent_for_confirm, "Key deleted successfully.");
+                                }
+                                Err(e) => show_error_dialog(&parent_for_confirm, &format!("Failed to delete key: {}", e)),
+                            }
+                        }
+                        confirm_dialog.close();
+                    });
+
+                    confirm.present();
+                });
+
+                row_box.append(&delete_btn);
 
                 let row = gtk4::ListBoxRow::new();
                 row.set_child(Some(&row_box));
@@ -303,6 +378,7 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
 
     dialog.present();
 }
+
 
 fn show_private_key_content_dialog(parent: &ApplicationWindow, priv_key: &str) {
     let dialog = gtk4::Dialog::builder()
@@ -375,9 +451,13 @@ fn show_encrypt_dialog(parent: &ApplicationWindow) {
     recipient_label.set_halign(gtk4::Align::Start);
     let recipient_entry = Entry::new();
 
-    // List of keys
+    // List of keys section
     let list_label = Label::new(Some("Select a recipient from your keys:"));
     list_label.set_halign(gtk4::Align::Start);
+
+    // Search entry for filtering keys
+    let search_entry = SearchEntry::new();
+    search_entry.set_placeholder_text(Some("Search keys by name, email, or key ID..."));
 
     let scrolled_keys = ScrolledWindow::new();
     scrolled_keys.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
@@ -386,28 +466,46 @@ fn show_encrypt_dialog(parent: &ApplicationWindow) {
     let list_box = gtk4::ListBox::new();
     scrolled_keys.set_child(Some(&list_box));
 
-    // Load keys into the list
+    // Store all keys for filtering
+    let all_keys = Rc::new(RefCell::new(Vec::new()));
+
+    // Load keys into the list and store them
     if let Ok(keys) = get_pgp_keys() {
-        for key in keys {
-            let row_box = Box::new(gtk4::Orientation::Horizontal, 10);
-            let label = Label::new(Some(&format!("{} <{}> [{}]", key.name, key.email, key.key_id)));
-            label.set_halign(gtk4::Align::Start);
-
-            let select_btn = Button::with_label("Select");
-            let recipient_entry_clone = recipient_entry.clone();
-            let key_id = key.key_id.clone();
-            select_btn.connect_clicked(move |_| {
-                recipient_entry_clone.set_text(&key_id);
-            });
-
-            row_box.append(&label);
-            row_box.append(&select_btn);
-
-            let row = gtk4::ListBoxRow::new();
-            row.set_child(Some(&row_box));
-            list_box.append(&row);
-        }
+        *all_keys.borrow_mut() = keys.clone();
+        populate_key_list(&list_box, &keys, &recipient_entry);
     }
+
+    // Set up search functionality
+    let all_keys_clone = all_keys.clone();
+    let list_box_clone = list_box.clone();
+    let recipient_entry_clone = recipient_entry.clone();
+    
+    search_entry.connect_search_changed(move |search_entry| {
+        let search_text = search_entry.text().to_lowercase();
+        let all_keys = all_keys_clone.borrow();
+        
+        // Clear current list
+        while let Some(child) = list_box_clone.first_child() {
+            list_box_clone.remove(&child);
+        }
+        
+        // Filter keys based on search text
+        let filtered_keys: Vec<_> = if search_text.is_empty() {
+            all_keys.clone()
+        } else {
+            all_keys.iter()
+                .filter(|key| {
+                    key.name.to_lowercase().contains(&search_text) ||
+                    key.email.to_lowercase().contains(&search_text) ||
+                    key.key_id.to_lowercase().contains(&search_text)
+                })
+                .cloned()
+                .collect()
+        };
+        
+        // Repopulate with filtered keys
+        populate_key_list(&list_box_clone, &filtered_keys, &recipient_entry_clone);
+    });
 
     // Message input
     let message_label = Label::new(Some("Message to encrypt:"));
@@ -445,6 +543,7 @@ fn show_encrypt_dialog(parent: &ApplicationWindow) {
     content_box.append(&recipient_label);
     content_box.append(&recipient_entry);
     content_box.append(&list_label);
+    content_box.append(&search_entry);  // Add search entry here
     content_box.append(&scrolled_keys);
     content_box.append(&message_label);
     content_box.append(&scrolled_input);
@@ -479,6 +578,28 @@ fn show_encrypt_dialog(parent: &ApplicationWindow) {
     });
 
     dialog.present();
+}
+
+fn populate_key_list(list_box: &gtk4::ListBox, keys: &[PgpKey], recipient_entry: &Entry) {
+    for key in keys {
+        let row_box = Box::new(gtk4::Orientation::Horizontal, 10);
+        let label = Label::new(Some(&format!("{} <{}> [{}]", key.name, key.email, key.key_id)));
+        label.set_halign(gtk4::Align::Start);
+
+        let select_btn = Button::with_label("Select");
+        let recipient_entry_clone = recipient_entry.clone();
+        let key_id = key.key_id.clone();
+        select_btn.connect_clicked(move |_| {
+            recipient_entry_clone.set_text(&key_id);
+        });
+
+        row_box.append(&label);
+        row_box.append(&select_btn);
+
+        let row = gtk4::ListBoxRow::new();
+        row.set_child(Some(&row_box));
+        list_box.append(&row);
+    }
 }
 
 
