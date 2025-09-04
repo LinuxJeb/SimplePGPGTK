@@ -144,25 +144,30 @@ fn show_generate_key_dialog(parent: &ApplicationWindow) {
     let dialog_clone = dialog.clone();
     let parent_clone = parent.clone();
     generate_btn.connect_clicked(move |_| {
-        let name = name_entry.text().to_string();
-        let email = email_entry.text().to_string();
-        let comment = comment_entry.text().to_string();
-        
-        if name.is_empty() || email.is_empty() {
-            show_error_dialog(&parent_clone, "Please fill in name and email fields");
-            return;
-        }
+    // Sanitize inputs
+    let name = match sanitize_uid_component(&name_entry.text()) {
+        Ok(s) => s,
+        Err(e) => { show_error_dialog(&parent_clone, &format!("Name error: {}", e)); return; }
+    };
+    let email = match sanitize_uid_component(&email_entry.text()) {
+        Ok(s) => s,
+        Err(e) => { show_error_dialog(&parent_clone, &format!("Email error: {}", e)); return; }
+    };
+    let comment = comment_entry.text().trim().to_string();
+    if comment.contains(['<', '>', '(', ')', '"', '\'']) {
+        show_error_dialog(&parent_clone, "Comment contains invalid characters");
+        return;
+    }
 
-        match generate_pgp_key(&name, &email, &comment) {
-            Ok(_) => {
-                show_info_dialog(&parent_clone, "\n PGP key generated successfully! \n");
-                dialog_clone.close();
-            }
-            Err(e) => {
-                show_error_dialog(&parent_clone, &format!("Failed to generate key: {}", e));
-            }
+    match generate_pgp_key(&name, &email, &comment) {
+        Ok(_) => {
+            show_info_dialog(&parent_clone, "PGP key generated successfully!");
+            dialog_clone.close();
         }
-    });
+        Err(e) => show_error_dialog(&parent_clone, &format!("Failed to generate key: {}", e)),
+    }
+});
+
 
     dialog.present();
 }
@@ -216,9 +221,15 @@ fn show_import_key_dialog(parent: &ApplicationWindow) {
     import_btn.connect_clicked(move |_| {
         let buffer = text_view.buffer();
         let key_data = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
-        
+
         if key_data.trim().is_empty() {
             show_error_dialog(&parent_clone, "Please paste a PGP key");
+            return;
+        }
+
+        // Basic check for valid PGP block
+        if !key_data.contains("-----BEGIN PGP") || !key_data.contains("-----END PGP") {
+            show_error_dialog(&parent_clone, "Invalid PGP key format");
             return;
         }
 
@@ -227,15 +238,33 @@ fn show_import_key_dialog(parent: &ApplicationWindow) {
                 show_info_dialog(&parent_clone, &format!("Key imported successfully!\n{}", output));
                 dialog_clone.close();
             }
-            Err(e) => {
-                show_error_dialog(&parent_clone, &format!("Failed to import key: {}", e));
-            }
+            Err(e) => show_error_dialog(&parent_clone, &format!("Failed to import key: {}", e)),
         }
     });
+
 
     dialog.present();
 }
 
+fn sanitize_recipient(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Recipient cannot be empty".to_string());
+    }
+    // Only allow alphanumerics, @, ., and - for email or key ID
+    if !trimmed.chars().all(|c| c.is_alphanumeric() || c == '@' || c == '.' || c == '-' ) {
+        return Err("Recipient contains invalid characters".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn sanitize_message(message: &str) -> Result<String, String> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err("Message cannot be empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
 
 
 fn delete_pgp_key(key_id: &str) -> Result<(), String> {
@@ -261,6 +290,18 @@ expect eof"#,
     }
 }
 
+
+fn sanitize_uid_component(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Field cannot be empty".to_string());
+    }
+    // Reject dangerous characters for gpg UID
+    if trimmed.contains(['<', '>', '(', ')', '"', '\'']) {
+        return Err("Invalid characters in input".to_string());
+    }
+    Ok(trimmed.to_string())
+}
 
 
 
@@ -562,20 +603,25 @@ fn show_encrypt_dialog(parent: &ApplicationWindow) {
     // Encrypt action
     let parent_clone = parent.clone();
     encrypt_btn.connect_clicked(move |_| {
-        let recipient = recipient_entry.text().to_string();
-        let buffer = input_text_view.buffer();
-        let message = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+        // Sanitize recipient
+        let recipient = match sanitize_recipient(&recipient_entry.text()) {
+            Ok(r) => r,
+            Err(e) => { show_error_dialog(&parent_clone, &format!("Recipient error: {}", e)); return; }
+        };
 
-        if recipient.is_empty() || message.trim().is_empty() {
-            show_error_dialog(&parent_clone, "Please fill in recipient and message");
-            return;
-        }
+        // Sanitize message
+        let buffer = input_text_view.buffer();
+        let message = match sanitize_message(&buffer.text(&buffer.start_iter(), &buffer.end_iter(), false)) {
+            Ok(m) => m,
+            Err(e) => { show_error_dialog(&parent_clone, &format!("Message error: {}", e)); return; }
+        };
 
         match encrypt_message(&recipient, &message) {
             Ok(encrypted) => output_text_view.buffer().set_text(&encrypted),
             Err(e) => show_error_dialog(&parent_clone, &format!("Encryption failed: {}", e)),
         }
     });
+
 
     dialog.present();
 }
@@ -664,22 +710,17 @@ fn show_decrypt_dialog(parent: &ApplicationWindow) {
     let parent_clone = parent.clone();
     decrypt_btn.connect_clicked(move |_| {
         let buffer = input_text_view.buffer();
-        let message = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
-        
-        if message.trim().is_empty() {
-            show_error_dialog(&parent_clone, "Please paste an encrypted message");
-            return;
-        }
+        let encrypted_message = match sanitize_message(&buffer.text(&buffer.start_iter(), &buffer.end_iter(), false)) {
+            Ok(m) => m,
+            Err(e) => { show_error_dialog(&parent_clone, &format!("Message error: {}", e)); return; }
+        };
 
-        match decrypt_message(&message) {
-            Ok(decrypted) => {
-                output_text_view.buffer().set_text(&decrypted);
-            }
-            Err(e) => {
-                show_error_dialog(&parent_clone, &format!("Decryption failed: {}", e));
-            }
+        match decrypt_message(&encrypted_message) {
+            Ok(decrypted) => output_text_view.buffer().set_text(&decrypted),
+            Err(e) => show_error_dialog(&parent_clone, &format!("Decryption failed: {}", e)),
         }
     });
+
 
     dialog.present();
 }
