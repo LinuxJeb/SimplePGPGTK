@@ -1,0 +1,47 @@
+app-id: com.linuxjeb.simplepgp
+runtime: org.gnome.Platform
+runtime-version: "47"
+sdk: org.gnome.Sdk
+command: /app/bin/simple-pgp-gtk
+build-options:
+  strip: false
+finish-args:
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=session-bus
+  - --device=dri
+  - --talk-name=org.freedesktop.secrets
+  - --filesystem=home
+  - --own-name=com.linuxjeb.simplepgp
+modules:
+  - name: expect-libs
+    buildsystem: simple
+    sources:
+      - type: file
+        path: libexpect5.45.4.so
+      - type: file
+        path: libtcl8.6.so
+      - type: file
+        path: expect-binary
+    build-commands:
+      - install -Dm755 libexpect5.45.4.so /app/lib/libexpect5.45.4.so
+      - install -Dm755 libtcl8.6.so /app/lib/libtcl8.6.so
+      - install -Dm755 expect-binary /app/bin/expect
+  - name: gnupg
+    sources:
+      - type: archive
+        url: https://gnupg.org/ftp/gcrypt/gnupg/gnupg-2.4.5.tar.bz2
+        sha256: f68f7d75d06cb1635c336d34d844af97436c3f64ea14bcb7c869782f96f44277
+    buildsystem: autotools
+    config-opts:
+      - --disable-doc
+  - name: simple-pgp-gtk
+    buildsystem: simple
+    sources:
+      - type: file
+        path: simple-pgp-gtk
+      - type: file
+        path: expect
+    build-commands:
+      - install -Dm755 simple-pgp-gtk /app/bin/simple-pgp-gtk
