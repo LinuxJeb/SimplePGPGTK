@@ -1,7 +1,6 @@
 use gtk4::prelude::*;
 use gtk4::{glib, Application, ApplicationWindow, Box, Button, Dialog, Entry, Label, ScrolledWindow, TextView, MessageDialog, SearchEntry};
 use std::process::Command;
-use std::io::Write;
 use std::rc::Rc;
 use std::cell::RefCell;
 
@@ -359,7 +358,7 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
                         .transient_for(&parent_clone)
                         .modal(true)
                         .buttons(gtk4::ButtonsType::YesNo)
-                        .text(&format!("Are you sure you want to delete key [{}]?", key_id_clone))
+                        .text(&format!("\n Are you sure you want to delete key [{}]? \n", key_id_clone))
                         .message_type(gtk4::MessageType::Warning)
                         .build();
 
@@ -378,7 +377,7 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
                                     dialog_for_confirm.close();
                                     // Reopen a fresh keys dialog
                                     show_keys_dialog(&parent_for_confirm);
-                                    show_info_dialog(&parent_for_confirm, "Key deleted successfully.");
+                                    show_info_dialog(&parent_for_confirm, "\n Key deleted successfully.\n");
                                 }
                                 Err(e) => show_error_dialog(&parent_for_confirm, &format!("Failed to delete key: {}", e)),
                             }
