@@ -30,7 +30,7 @@ fn build_ui(app: &Application) {
     main_box.set_margin_end(20);
 
     // Title
-    let title = Label::new(Some("PGP Key Manager"));
+    let title = Label::new(Some("Simple PGP Manager"));
     title.set_markup("<span size='large' weight='bold'>PGP Key Manager</span>");
     main_box.append(&title);
 
