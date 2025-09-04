@@ -3,7 +3,8 @@ use gtk4::{glib, Application, ApplicationWindow, Box, Button, Dialog, Entry, Lab
 use std::process::Command;
 use std::rc::Rc;
 use std::cell::RefCell;
-
+use std::env;
+use which::which;
 
 const APP_ID: &str = "com.linuxjeb.pgpmgr";
 
@@ -160,7 +161,7 @@ fn show_generate_key_dialog(parent: &ApplicationWindow) {
 
     match generate_pgp_key(&name, &email, &comment) {
         Ok(_) => {
-            show_info_dialog(&parent_clone, "PGP key generated successfully!");
+            show_info_dialog(&parent_clone, "\n PGP key generated successfully! \n");
             dialog_clone.close();
         }
         Err(e) => show_error_dialog(&parent_clone, &format!("Failed to generate key: {}", e)),
@@ -266,28 +267,35 @@ fn sanitize_message(message: &str) -> Result<String, String> {
 }
 
 
+
+
+
+
 fn delete_pgp_key(key_id: &str) -> Result<(), String> {
-    // Build an expect script as a one-liner
-    let script = format!(
-        r#"spawn gpg --yes --delete-secret-and-public-key {}
-expect "Delete this key from the keyring?" {{ send "y\r" }}
-expect "This is a secret key! - really delete?" {{ send "y\r" }}
-expect eof"#,
-        key_id
-    );
+    let st_path = which("st").map_err(|_| "st terminal not found in PATH".to_string())?;
 
-    let output = Command::new("expect")
+    // GPG command to run inside bash
+    let bash_command = format!("gpg --pinentry-mode loopback --delete-secret-and-public-key {} ; echo 'Finished. Press Enter to close...' ; read", key_id);
+
+    // Run st with proper args
+    let status = Command::new(st_path)
+        .arg("-e")
+        .arg("bash")
         .arg("-c")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Failed to run expect: {}", e))?;
+        .arg(&bash_command)
+        .status()
+        .map_err(|e| format!("Failed to spawn st terminal: {}", e))?;
 
-    if output.status.success() {
+    if status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        Err(format!("GPG command failed with status: {}", status))
     }
 }
+
+
+
+
 
 
 fn sanitize_uid_component(input: &str) -> Result<String, String> {
@@ -358,7 +366,7 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
                         .transient_for(&parent_clone)
                         .modal(true)
                         .buttons(gtk4::ButtonsType::YesNo)
-                        .text(&format!("\n Are you sure you want to delete key [{}]? \n", key_id_clone))
+                        .text(&format!("\n Please enter y to the terminal prompts to delete the key. \n"))
                         .message_type(gtk4::MessageType::Warning)
                         .build();
 
@@ -369,15 +377,17 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
                         if response == gtk4::ResponseType::Yes {
                             match delete_pgp_key(&key_id_confirm) {
                                 Ok(_) => {
+                                    /*
                                     match delete_pgp_key(&key_id_confirm){
                                         Ok(()) => {}
                                         Err(e) => show_error_dialog(&parent_for_confirm, &format!("Failed to delete key: {}", e)),
                                     }
+                                    */
                                     // Close the current dialog
                                     dialog_for_confirm.close();
                                     // Reopen a fresh keys dialog
                                     show_keys_dialog(&parent_for_confirm);
-                                    show_info_dialog(&parent_for_confirm, "\n Key deleted successfully.\n");
+                                    show_info_dialog(&parent_for_confirm, "\n Finished.\n");
                                 }
                                 Err(e) => show_error_dialog(&parent_for_confirm, &format!("Failed to delete key: {}", e)),
                             }

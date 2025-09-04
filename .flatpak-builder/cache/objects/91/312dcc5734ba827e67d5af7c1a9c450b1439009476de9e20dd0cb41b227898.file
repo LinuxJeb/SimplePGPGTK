@@ -1,0 +1,5 @@
+[Runtime]
+name=com.linuxjeb.simplepgp.Locale
+
+[ExtensionOf]
+ref=app/com.linuxjeb.simplepgp/x86_64/master

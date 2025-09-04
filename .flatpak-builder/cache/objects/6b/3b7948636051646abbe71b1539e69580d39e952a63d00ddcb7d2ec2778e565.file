@@ -1,0 +1,27 @@
+[Application]
+name=com.linuxjeb.simplepgp
+runtime=org.gnome.Platform/x86_64/47
+sdk=org.gnome.Sdk/x86_64/47
+command=simple-pgp-gtk
+
+[Context]
+shared=network;
+sockets=x11;wayland;session-bus;fallback-x11;
+devices=dri;
+filesystems=home;
+
+[Session Bus Policy]
+org.freedesktop.secrets=talk
+
+[Extension com.linuxjeb.simplepgp.Locale]
+directory=share/runtime/locale
+autodelete=true
+locale-subset=true
+
+[Extension com.linuxjeb.simplepgp.Debug]
+directory=lib/debug
+autodelete=true
+no-autodownload=true
+
+[Build]
+built-extensions=com.linuxjeb.simplepgp.Locale;com.linuxjeb.simplepgp.Debug;
