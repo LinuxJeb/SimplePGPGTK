@@ -1,5 +1,0 @@
-[Runtime]
-name=com.linuxjeb.simplepgp.Debug
-
-[ExtensionOf]
-ref=app/com.linuxjeb.simplepgp/x86_64/master
