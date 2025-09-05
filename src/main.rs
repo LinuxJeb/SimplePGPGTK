@@ -781,7 +781,6 @@ fn generate_pgp_key(name: &str, email: &str, comment: &str) -> Result<String, St
         .args([
             "--batch",
             "--yes",
-            "--pinentry-mode", "loopback",
             "--passphrase", "",
             "--quick-generate-key",
             &uid,
@@ -1135,9 +1134,14 @@ fn export_public_key(key_id: &str) -> Result<String, String> {
     }
 }
 
+
 fn export_private_key(key_id: &str) -> Result<String, String> {
     let output = Command::new("gpg")
-        .args(["--armor", "--export-secret-keys", key_id])
+        .args([
+            "--armor",
+            "--export-secret-keys",
+            key_id,
+        ])
         .output()
         .map_err(|e| format!("Failed to execute gpg: {}", e))?;
 
@@ -1147,6 +1151,7 @@ fn export_private_key(key_id: &str) -> Result<String, String> {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
 }
+
 
 fn encrypt_message(recipient: &str, message: &str) -> Result<String, String> {
     let output = Command::new("gpg")
