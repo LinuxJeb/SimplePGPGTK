@@ -10,7 +10,6 @@ build-extensions:
 finish-args:
   - --share=network
   - --socket=fallback-x11
-  - --socket=wayland
   - --socket=session-bus
   - --device=dri
   - --talk-name=org.freedesktop.secrets
