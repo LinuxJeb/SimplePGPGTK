@@ -32,7 +32,7 @@ fn build_ui(app: &Application) {
 
     // Title
     let title = Label::new(Some("Simple PGP Manager"));
-    title.set_markup("<span size='large' weight='bold'>PGP Key Manager</span>");
+    title.set_markup("<span size='large' weight='bold'>Simple PGP Manager</span>");
     main_box.append(&title);
 
     // Create buttons
@@ -60,6 +60,7 @@ fn build_ui(app: &Application) {
     let window_clone = window.clone();
     generate_key_btn.connect_clicked(move |_| {
         show_generate_key_dialog(&window_clone);
+        
     });
 
     let window_clone = window.clone();
