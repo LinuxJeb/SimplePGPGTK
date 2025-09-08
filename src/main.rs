@@ -19,8 +19,8 @@ fn build_ui(app: &Application) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("PGP Manager")
-        .default_width(600)
-        .default_height(400)
+        .default_width(250)
+        .default_height(350)
         .build();
 
     // Create main layout
