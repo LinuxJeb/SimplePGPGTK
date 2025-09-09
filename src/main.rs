@@ -1,3 +1,4 @@
+//Imports
 use gtk4::prelude::*;
 use gtk4::{glib, Application, ApplicationWindow, Box, Button, Dialog, Entry, Label, ScrolledWindow, TextView, MessageDialog, SearchEntry};
 use std::process::Command;
@@ -13,9 +14,9 @@ fn main() -> glib::ExitCode {
     app.connect_activate(build_ui);
     app.run()
 }
-
+//Initial UI setup
 fn build_ui(app: &Application) {
-    // Create main window
+    // create the main window
     let window = ApplicationWindow::builder()
         .application(app)
         .title("PGP Manager")
@@ -23,7 +24,7 @@ fn build_ui(app: &Application) {
         .default_height(350)
         .build();
 
-    // Create main layout
+    // create layout
     let main_box = Box::new(gtk4::Orientation::Vertical, 10);
     main_box.set_margin_top(20);
     main_box.set_margin_bottom(20);
@@ -56,7 +57,7 @@ fn build_ui(app: &Application) {
     main_box.append(&buttons_box);
     window.set_child(Some(&main_box));
 
-    // Connect button signals
+    // make the buttons do things
     let window_clone = window.clone();
     generate_key_btn.connect_clicked(move |_| {
         show_generate_key_dialog(&window_clone);
@@ -87,9 +88,288 @@ fn build_ui(app: &Application) {
     decrypt_msg_btn.connect_clicked(move |_| {
         show_decrypt_dialog(&window_clone);
     });
-
+    //Display the window to the user
     window.present();
 }
+
+//Input sanitization functions
+
+fn sanitize_recipient(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Recipient cannot be empty".to_string());
+    }
+    // Only allow alphanumerics, @, ., and - for email or key ID
+    if !trimmed.chars().all(|c| c.is_alphanumeric() || c == '@' || c == '.' || c == '-' ) {
+        return Err("Recipient contains invalid characters".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn sanitize_message(message: &str) -> Result<String, String> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err("Message cannot be empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn sanitize_uid_component(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Field cannot be empty".to_string());
+    }
+    // Reject dangerous characters for gpg UID
+    if trimmed.contains(['<', '>', '(', ')', '"', '\'']) {
+        return Err("Invalid characters in input".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+//Other helper functions
+
+fn delete_pgp_key(key_id: &str) -> Result<(), String> {
+    let st_path = which("st").map_err(|_| "st terminal not found in PATH".to_string())?;
+
+    // Run gpg using st
+    let bash_command = format!("gpg --pinentry-mode loopback --delete-secret-and-public-key {} ; echo 'Finished. Press Enter to close...' ; read", key_id);
+
+    // Run st with proper args
+    let status = Command::new(st_path)
+        .arg("-e")
+        .arg("bash")
+        .arg("-c")
+        .arg(&bash_command)
+        .status()
+        .map_err(|e| format!("Failed to spawn st terminal: {}", e))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("GPG command failed with status: {}", status))
+    }
+}
+
+fn import_pgp_key(key_data: &str) -> Result<String, String> {
+    let output = Command::new("gpg")
+        .args(["--import"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start gpg: {}", e))?;
+
+    let mut child = output;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin.write_all(key_data.as_bytes())
+            .map_err(|e| format!("Failed to write to gpg stdin: {}", e))?;
+    }
+
+    let result = child.wait_with_output()
+        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
+
+    if result.status.success() {
+        let stderr_output = String::from_utf8_lossy(&result.stderr);
+        Ok(stderr_output.to_string())
+    } else {
+        Err(String::from_utf8_lossy(&result.stderr).to_string())
+    }
+}
+
+
+fn populate_key_list(list_box: &gtk4::ListBox, keys: &[PgpKey], recipient_entry: &Entry) {
+    for key in keys {
+        let row_box = Box::new(gtk4::Orientation::Horizontal, 10);
+        let label = Label::new(Some(&format!("{} <{}> [{}]", key.name, key.email, key.key_id)));
+        label.set_halign(gtk4::Align::Start);
+
+        let select_btn = Button::with_label("Select");
+        let recipient_entry_clone = recipient_entry.clone();
+        let key_id = key.key_id.clone();
+        select_btn.connect_clicked(move |_| {
+            recipient_entry_clone.set_text(&key_id);
+        });
+
+        row_box.append(&label);
+        row_box.append(&select_btn);
+
+        let row = gtk4::ListBoxRow::new();
+        row.set_child(Some(&row_box));
+        list_box.append(&row);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PgpKey {
+    key_id: String,
+    name: String,
+    email: String,
+}
+
+
+
+fn get_pgp_keys() -> Result<Vec<PgpKey>, String> {
+    let output = Command::new("gpg")
+        .args(["--list-keys", "--with-colons"])
+        .output()
+        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let mut keys = Vec::new();
+    let mut current_key_id = String::new();
+    let mut current_name = String::new();
+    let mut current_email = String::new();
+
+    for line in output_str.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        
+        match fields.get(0) {
+            Some(&"pub") => {
+                // Public key line - get key ID (last 8 characters of fingerprint)
+                if let Some(key_id) = fields.get(4) {
+                    current_key_id = if key_id.len() > 8 {
+                        key_id[key_id.len()-8..].to_string()
+                    } else {
+                        key_id.to_string()
+                    };
+                }
+            }
+            Some(&"uid") => {
+                // User ID line - get name and email
+                if let Some(uid) = fields.get(9) {
+                    // Parse "Name (Comment) <email@example.com>" format
+                    if let Some(email_start) = uid.rfind('<') {
+                        if let Some(email_end) = uid.rfind('>') {
+                            current_email = uid[email_start + 1..email_end].to_string();
+                            let name_part = uid[..email_start].trim();
+                            
+                            // Remove comment in parentheses if present
+                            if let Some(comment_start) = name_part.rfind('(') {
+                                current_name = name_part[..comment_start].trim().to_string();
+                            } else {
+                                current_name = name_part.to_string();
+                            }
+                        }
+                    } else {
+                        // Fallback if format is different
+                        current_name = uid.to_string();
+                        current_email = "No email".to_string();
+                    }
+                    
+                    // Add the key when we have all the info
+                    if !current_key_id.is_empty() && !current_name.is_empty() {
+                        keys.push(PgpKey {
+                            key_id: current_key_id.clone(),
+                            name: current_name.clone(),
+                            email: current_email.clone(),
+                        });
+                        
+                        // Reset for next key
+                        current_key_id.clear();
+                        current_name.clear();
+                        current_email.clear();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(keys)
+}
+
+
+fn export_public_key(key_id: &str) -> Result<String, String> {
+    let output = Command::new("gpg")
+        .args(["--armor", "--export", key_id])
+        .output()
+        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+
+fn export_private_key(key_id: &str) -> Result<String, String> {
+    let output = Command::new("gpg")
+        .args([
+            "--armor",
+            "--export-secret-keys",
+            key_id,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+
+fn encrypt_message(recipient: &str, message: &str) -> Result<String, String> {
+    let output = Command::new("gpg")
+        .args(["--armor", "--encrypt", "--recipient", recipient])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start gpg: {}", e))?;
+
+    let mut child = output;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin.write_all(message.as_bytes())
+            .map_err(|e| format!("Failed to write to gpg stdin: {}", e))?;
+    }
+
+    let result = child.wait_with_output()
+        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
+
+    if result.status.success() {
+        Ok(String::from_utf8_lossy(&result.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&result.stderr).to_string())
+    }
+}
+
+fn decrypt_message(encrypted_message: &str) -> Result<String, String> {
+    let output = Command::new("gpg")
+        .args(["--decrypt"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start gpg: {}", e))?;
+
+    let mut child = output;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin.write_all(encrypted_message.as_bytes())
+            .map_err(|e| format!("Failed to write to gpg stdin: {}", e))?;
+    }
+
+    let result = child.wait_with_output()
+        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
+
+    if result.status.success() {
+        Ok(String::from_utf8_lossy(&result.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&result.stderr).to_string())
+    }
+}
+
+
+//Dialogs
 
 fn show_generate_key_dialog(parent: &ApplicationWindow) {
     let dialog = Dialog::builder()
@@ -228,7 +508,7 @@ fn show_import_key_dialog(parent: &ApplicationWindow) {
             return;
         }
 
-        // Basic check for valid PGP block
+        // make sure the pgp is valid
         if !key_data.contains("-----BEGIN PGP") || !key_data.contains("-----END PGP") {
             show_error_dialog(&parent_clone, "Invalid PGP key format");
             return;
@@ -243,73 +523,23 @@ fn show_import_key_dialog(parent: &ApplicationWindow) {
         }
     });
 
-
+    //Display the dialog
     dialog.present();
 }
 
-fn sanitize_recipient(input: &str) -> Result<String, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("Recipient cannot be empty".to_string());
-    }
-    // Only allow alphanumerics, @, ., and - for email or key ID
-    if !trimmed.chars().all(|c| c.is_alphanumeric() || c == '@' || c == '.' || c == '-' ) {
-        return Err("Recipient contains invalid characters".to_string());
-    }
-    Ok(trimmed.to_string())
-}
-
-fn sanitize_message(message: &str) -> Result<String, String> {
-    let trimmed = message.trim();
-    if trimmed.is_empty() {
-        return Err("Message cannot be empty".to_string());
-    }
-    Ok(trimmed.to_string())
-}
 
 
 
 
 
 
-fn delete_pgp_key(key_id: &str) -> Result<(), String> {
-    let st_path = which("st").map_err(|_| "st terminal not found in PATH".to_string())?;
-
-    // GPG command to run inside bash
-    let bash_command = format!("gpg --pinentry-mode loopback --delete-secret-and-public-key {} ; echo 'Finished. Press Enter to close...' ; read", key_id);
-
-    // Run st with proper args
-    let status = Command::new(st_path)
-        .arg("-e")
-        .arg("bash")
-        .arg("-c")
-        .arg(&bash_command)
-        .status()
-        .map_err(|e| format!("Failed to spawn st terminal: {}", e))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("GPG command failed with status: {}", status))
-    }
-}
 
 
 
 
 
 
-fn sanitize_uid_component(input: &str) -> Result<String, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("Field cannot be empty".to_string());
-    }
-    // Reject dangerous characters for gpg UID
-    if trimmed.contains(['<', '>', '(', ')', '"', '\'']) {
-        return Err("Invalid characters in input".to_string());
-    }
-    Ok(trimmed.to_string())
-}
+
 
 
 
@@ -636,27 +866,7 @@ fn show_encrypt_dialog(parent: &ApplicationWindow) {
     dialog.present();
 }
 
-fn populate_key_list(list_box: &gtk4::ListBox, keys: &[PgpKey], recipient_entry: &Entry) {
-    for key in keys {
-        let row_box = Box::new(gtk4::Orientation::Horizontal, 10);
-        let label = Label::new(Some(&format!("{} <{}> [{}]", key.name, key.email, key.key_id)));
-        label.set_halign(gtk4::Align::Start);
 
-        let select_btn = Button::with_label("Select");
-        let recipient_entry_clone = recipient_entry.clone();
-        let key_id = key.key_id.clone();
-        select_btn.connect_clicked(move |_| {
-            recipient_entry_clone.set_text(&key_id);
-        });
-
-        row_box.append(&label);
-        row_box.append(&select_btn);
-
-        let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(&row_box));
-        list_box.append(&row);
-    }
-}
 
 
 fn show_decrypt_dialog(parent: &ApplicationWindow) {
@@ -735,7 +945,7 @@ fn show_decrypt_dialog(parent: &ApplicationWindow) {
     dialog.present();
 }
 
-// Helper functions for dialogs
+
 fn show_error_dialog(parent: &ApplicationWindow, message: &str) {
     let dialog = MessageDialog::builder()
         .transient_for(parent)
@@ -810,117 +1020,8 @@ fn generate_pgp_key(name: &str, email: &str, comment: &str) -> Result<String, St
 
 
 
-fn import_pgp_key(key_data: &str) -> Result<String, String> {
-    let output = Command::new("gpg")
-        .args(["--import"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start gpg: {}", e))?;
-
-    let mut child = output;
-    if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
-        stdin.write_all(key_data.as_bytes())
-            .map_err(|e| format!("Failed to write to gpg stdin: {}", e))?;
-    }
-
-    let result = child.wait_with_output()
-        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
-
-    if result.status.success() {
-        let stderr_output = String::from_utf8_lossy(&result.stderr);
-        Ok(stderr_output.to_string())
-    } else {
-        Err(String::from_utf8_lossy(&result.stderr).to_string())
-    }
-}
 
 
-
-#[derive(Debug, Clone)]
-struct PgpKey {
-    key_id: String,
-    name: String,
-    email: String,
-}
-
-
-
-fn get_pgp_keys() -> Result<Vec<PgpKey>, String> {
-    let output = Command::new("gpg")
-        .args(["--list-keys", "--with-colons"])
-        .output()
-        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    let mut keys = Vec::new();
-    let mut current_key_id = String::new();
-    let mut current_name = String::new();
-    let mut current_email = String::new();
-
-    for line in output_str.lines() {
-        let fields: Vec<&str> = line.split(':').collect();
-        
-        match fields.get(0) {
-            Some(&"pub") => {
-                // Public key line - get key ID (last 8 characters of fingerprint)
-                if let Some(key_id) = fields.get(4) {
-                    current_key_id = if key_id.len() > 8 {
-                        key_id[key_id.len()-8..].to_string()
-                    } else {
-                        key_id.to_string()
-                    };
-                }
-            }
-            Some(&"uid") => {
-                // User ID line - get name and email
-                if let Some(uid) = fields.get(9) {
-                    // Parse "Name (Comment) <email@example.com>" format
-                    if let Some(email_start) = uid.rfind('<') {
-                        if let Some(email_end) = uid.rfind('>') {
-                            current_email = uid[email_start + 1..email_end].to_string();
-                            let name_part = uid[..email_start].trim();
-                            
-                            // Remove comment in parentheses if present
-                            if let Some(comment_start) = name_part.rfind('(') {
-                                current_name = name_part[..comment_start].trim().to_string();
-                            } else {
-                                current_name = name_part.to_string();
-                            }
-                        }
-                    } else {
-                        // Fallback if format is different
-                        current_name = uid.to_string();
-                        current_email = "No email".to_string();
-                    }
-                    
-                    // Add the key when we have all the info
-                    if !current_key_id.is_empty() && !current_name.is_empty() {
-                        keys.push(PgpKey {
-                            key_id: current_key_id.clone(),
-                            name: current_name.clone(),
-                            email: current_email.clone(),
-                        });
-                        
-                        // Reset for next key
-                        current_key_id.clear();
-                        current_name.clear();
-                        current_email.clear();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(keys)
-}
 
 
 fn show_private_keys_dialog(parent: &ApplicationWindow) {
@@ -1122,86 +1223,3 @@ fn show_public_key_dialog(parent: &ApplicationWindow, key_id: &str) {
     dialog.present();
 }
 
-fn export_public_key(key_id: &str) -> Result<String, String> {
-    let output = Command::new("gpg")
-        .args(["--armor", "--export", key_id])
-        .output()
-        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
-}
-
-
-fn export_private_key(key_id: &str) -> Result<String, String> {
-    let output = Command::new("gpg")
-        .args([
-            "--armor",
-            "--export-secret-keys",
-            key_id,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
-}
-
-
-fn encrypt_message(recipient: &str, message: &str) -> Result<String, String> {
-    let output = Command::new("gpg")
-        .args(["--armor", "--encrypt", "--recipient", recipient])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start gpg: {}", e))?;
-
-    let mut child = output;
-    if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
-        stdin.write_all(message.as_bytes())
-            .map_err(|e| format!("Failed to write to gpg stdin: {}", e))?;
-    }
-
-    let result = child.wait_with_output()
-        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
-
-    if result.status.success() {
-        Ok(String::from_utf8_lossy(&result.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&result.stderr).to_string())
-    }
-}
-
-fn decrypt_message(encrypted_message: &str) -> Result<String, String> {
-    let output = Command::new("gpg")
-        .args(["--decrypt"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start gpg: {}", e))?;
-
-    let mut child = output;
-    if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
-        stdin.write_all(encrypted_message.as_bytes())
-            .map_err(|e| format!("Failed to write to gpg stdin: {}", e))?;
-    }
-
-    let result = child.wait_with_output()
-        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
-
-    if result.status.success() {
-        Ok(String::from_utf8_lossy(&result.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&result.stderr).to_string())
-    }
-}
