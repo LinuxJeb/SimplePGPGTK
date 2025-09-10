@@ -369,6 +369,46 @@ fn decrypt_message(encrypted_message: &str) -> Result<String, String> {
 }
 
 
+// PGP operations using gpg 
+fn generate_pgp_key(name: &str, email: &str, comment: &str) -> Result<String, String> {
+    // Build the uid string: Name (Comment) <Email>
+    let uid = if comment.is_empty() {
+        format!("{} <{}>", name, email)
+    } else {
+        format!("{} ({}) <{}>", name, comment, email)
+    };
+
+    let output = Command::new("gpg")
+        .args([
+            "--batch",
+            "--yes",
+            "--passphrase", "",
+            "--quick-generate-key",
+            &uid,
+            "rsa4096",
+            "sign,encrypt,auth",
+            "0", // 0 = never expire
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to start gpg: {}", e))?;
+
+    let mut combined = String::new();
+    combined.push_str(&String::from_utf8_lossy(&output.stdout));
+    if !output.stderr.is_empty() {
+        if !combined.is_empty() { combined.push('\n'); }
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+
+    if output.status.success() {
+        Ok(combined)
+    } else {
+        Err(combined)
+    }
+}
+
+
 //Dialogs
 
 fn show_generate_key_dialog(parent: &ApplicationWindow) {
@@ -448,8 +488,6 @@ fn show_generate_key_dialog(parent: &ApplicationWindow) {
         Err(e) => show_error_dialog(&parent_clone, &format!("Failed to generate key: {}", e)),
     }
 });
-
-
     dialog.present();
 }
 
@@ -531,9 +569,70 @@ fn show_import_key_dialog(parent: &ApplicationWindow) {
 
 
 
+fn get_pgp_private_keys() -> Result<Vec<PgpKey>, String> {
+    let output = Command::new("gpg")
+        .args(["--list-secret-keys", "--with-colons"])
+        .output()
+        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
 
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
 
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let mut keys = Vec::new();
+    let mut current_key_id = String::new();
+    let mut current_name = String::new();
+    let mut current_email = String::new();
 
+    for line in output_str.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+
+        match fields.get(0) {
+            Some(&"sec") => {
+                if let Some(key_id) = fields.get(4) {
+                    current_key_id = if key_id.len() > 8 {
+                        key_id[key_id.len()-8..].to_string()
+                    } else {
+                        key_id.to_string()
+                    };
+                }
+            }
+            Some(&"uid") => {
+                if let Some(uid) = fields.get(9) {
+                    if let Some(email_start) = uid.rfind('<') {
+                        if let Some(email_end) = uid.rfind('>') {
+                            current_email = uid[email_start + 1..email_end].to_string();
+                            let name_part = uid[..email_start].trim();
+                            if let Some(comment_start) = name_part.rfind('(') {
+                                current_name = name_part[..comment_start].trim().to_string();
+                            } else {
+                                current_name = name_part.to_string();
+                            }
+                        }
+                    } else {
+                        current_name = uid.to_string();
+                        current_email = "No email".to_string();
+                    }
+
+                    if !current_key_id.is_empty() && !current_name.is_empty() {
+                        keys.push(PgpKey {
+                            key_id: current_key_id.clone(),
+                            name: current_name.clone(),
+                            email: current_email.clone(),
+                        });
+                        current_key_id.clear();
+                        current_name.clear();
+                        current_email.clear();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(keys)
+}
 
 
 
@@ -608,12 +707,6 @@ fn show_keys_dialog(parent: &ApplicationWindow) {
                         if response == gtk4::ResponseType::Yes {
                             match delete_pgp_key(&key_id_confirm) {
                                 Ok(_) => {
-                                    /*
-                                    match delete_pgp_key(&key_id_confirm){
-                                        Ok(()) => {}
-                                        Err(e) => show_error_dialog(&parent_for_confirm, &format!("Failed to delete key: {}", e)),
-                                    }
-                                    */
                                     // Close the current dialog
                                     dialog_for_confirm.close();
                                     // Reopen a fresh keys dialog
@@ -979,45 +1072,6 @@ fn show_info_dialog(parent: &ApplicationWindow, message: &str) {
     dialog.present();
 }
 
-// PGP operations using gpg 
-fn generate_pgp_key(name: &str, email: &str, comment: &str) -> Result<String, String> {
-    // Build the uid string: Name (Comment) <Email>
-    let uid = if comment.is_empty() {
-        format!("{} <{}>", name, email)
-    } else {
-        format!("{} ({}) <{}>", name, comment, email)
-    };
-
-    let output = Command::new("gpg")
-        .args([
-            "--batch",
-            "--yes",
-            "--passphrase", "",
-            "--quick-generate-key",
-            &uid,
-            "rsa4096",
-            "sign,encrypt,auth",
-            "0", // 0 = never expire
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("Failed to start gpg: {}", e))?;
-
-    let mut combined = String::new();
-    combined.push_str(&String::from_utf8_lossy(&output.stdout));
-    if !output.stderr.is_empty() {
-        if !combined.is_empty() { combined.push('\n'); }
-        combined.push_str(&String::from_utf8_lossy(&output.stderr));
-    }
-
-    if output.status.success() {
-        Ok(combined)
-    } else {
-        Err(combined)
-    }
-}
-
 
 
 
@@ -1101,72 +1155,6 @@ fn show_private_keys_dialog(parent: &ApplicationWindow) {
 
     dialog.present();
 }
-
-fn get_pgp_private_keys() -> Result<Vec<PgpKey>, String> {
-    let output = Command::new("gpg")
-        .args(["--list-secret-keys", "--with-colons"])
-        .output()
-        .map_err(|e| format!("Failed to execute gpg: {}", e))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    let mut keys = Vec::new();
-    let mut current_key_id = String::new();
-    let mut current_name = String::new();
-    let mut current_email = String::new();
-
-    for line in output_str.lines() {
-        let fields: Vec<&str> = line.split(':').collect();
-
-        match fields.get(0) {
-            Some(&"sec") => {
-                if let Some(key_id) = fields.get(4) {
-                    current_key_id = if key_id.len() > 8 {
-                        key_id[key_id.len()-8..].to_string()
-                    } else {
-                        key_id.to_string()
-                    };
-                }
-            }
-            Some(&"uid") => {
-                if let Some(uid) = fields.get(9) {
-                    if let Some(email_start) = uid.rfind('<') {
-                        if let Some(email_end) = uid.rfind('>') {
-                            current_email = uid[email_start + 1..email_end].to_string();
-                            let name_part = uid[..email_start].trim();
-                            if let Some(comment_start) = name_part.rfind('(') {
-                                current_name = name_part[..comment_start].trim().to_string();
-                            } else {
-                                current_name = name_part.to_string();
-                            }
-                        }
-                    } else {
-                        current_name = uid.to_string();
-                        current_email = "No email".to_string();
-                    }
-
-                    if !current_key_id.is_empty() && !current_name.is_empty() {
-                        keys.push(PgpKey {
-                            key_id: current_key_id.clone(),
-                            name: current_name.clone(),
-                            email: current_email.clone(),
-                        });
-                        current_key_id.clear();
-                        current_name.clear();
-                        current_email.clear();
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(keys)
-}
-
 
 
 fn show_public_key_dialog(parent: &ApplicationWindow, key_id: &str) {
